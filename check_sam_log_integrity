@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# Nagios exit codes
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+# Help function
+usage() {
+    echo "Usage: $0 -H <hostname> -p <port> -c <cert_file> -k <key_file> -b <base64_log_entry>"
+    exit $STATE_UNKNOWN
+}
+
+# Parse options
+while getopts ":H:p:c:k:b:" opt; do
+    case ${opt} in
+        H )
+            HOSTNAME="$OPTARG"
+            ;;
+        p )
+            PORT="$OPTARG"
+            ;;
+        c )
+            CERT_FILE="$OPTARG"
+            ;;
+        k )
+            KEY_FILE="$OPTARG"
+            ;;
+        b )
+            BODY_BASE64="$OPTARG"
+            ;;
+        \? )
+            echo "CRITICAL - Invalid option: -$OPTARG" >&2
+            usage
+            ;;
+        : )
+            echo "CRITICAL - Option -$OPTARG requires an argument." >&2
+            usage
+            ;;
+    esac
+done
+
+# Check if all required arguments are provided
+if [ -z "$HOSTNAME" ] || [ -z "$PORT" ] || [ -z "$CERT_FILE" ] || [ -z "$KEY_FILE" ] || [ -z "$BODY_BASE64" ]; then
+    echo "CRITICAL - Missing required arguments."
+    usage
+fi
+
+# Validate files
+if [ ! -f "$CERT_FILE" ]; then
+    echo "CRITICAL - Certificate file not found: $CERT_FILE"
+    exit $STATE_CRITICAL
+fi
+
+if [ ! -f "$KEY_FILE" ]; then
+    echo "CRITICAL - Key file not found: $KEY_FILE"
+    exit $STATE_CRITICAL
+fi
+
+# Decode base64 body
+BODY=$(echo "$BODY_BASE64" | base64 --decode 2>/dev/null)
+if [ $? -ne 0 ]; then
+    echo "CRITICAL - Failed to decode base64 body."
+    exit $STATE_CRITICAL
+fi
+
+# Call SAM API
+RESPONSE=$(echo "$BODY" |\
+    curl --cert $CERT_FILE --key $KEY_FILE \
+        --insecure -d @- -o - -sS \
+        https://$HOSTNAME:$PORT/sam/v1/audit_records/\$body/verification 2>&1 )
+
+if [ $? -ne 0 ]; then
+    echo "CRITICAL - Failed to send request to SAM: $RESPONSE"
+    exit $STATE_CRITICAL
+fi
+
+# Check response
+if [ "$RESPONSE" == '{"result":"valid"}' ]; then
+    echo "OK - SAM: $RESPONSE"
+    exit $STATE_OK
+fi
+
+echo "CRITICAL - SAM: $RESPONSE"
+exit $STATE_CRITICAL
